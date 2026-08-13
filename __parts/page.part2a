@@ -1,0 +1,63 @@
+  const monatlicheKostenGesamt = laufendeKostenOhneSparen + monatlichesSparen + einmaligImMonat + girokontoMinus;
+  const freiVerfuegbar = monatlicheEinnahmen - monatlicheKostenGesamt;
+  const nettovermoegen = konten.reduce((s, k) => s + k.aktueller_stand, 0);
+
+  const cashflowDaten = verlauf.slice(1).map((punkt, i) => ({
+    m: punkt.monat,
+    val: punkt.val - verlauf[i].val,
+  }));
+
+  const eigeneKonten = konten.filter((k) => !k.ist_kinderkonto);
+  const kinderKonten = konten.filter((k) => k.ist_kinderkonto);
+  const eigeneSumme = eigeneKonten.reduce((s, k) => s + k.aktueller_stand, 0);
+  const typSummen = eigeneKonten.reduce<Record<string, number>>((acc, k) => {
+    acc[k.typ] = (acc[k.typ] ?? 0) + k.aktueller_stand;
+    return acc;
+  }, {});
+  const assetSegmente = Object.entries(typSummen).map(([typ, betrag]) => ({
+    typ,
+    betrag,
+    anteil: eigeneSumme > 0 ? (betrag / eigeneSumme) * 100 : 0,
+  }));
+
+  // "Nächste Einnahmen": alle regelmäßigen Einnahmen, nicht nur die mit
+  // gesetztem Datum – sonst fehlen ausgerechnet Gehalt & Co., wenn kein
+  // genaues Fälligkeitsdatum hinterlegt ist. Sortiert nach Tag im Monat,
+  // Einträge ohne Datum landen ans Ende.
+  const naechsteEinnahmen = einnahmen
+    .filter((e) => e.art === "regelmaessig" && e.betrag != null && !e.notiz?.toUpperCase().startsWith("INTERNE"))
+    .sort((a, b) => {
+      const tagA = a.naechste_faelligkeit ? new Date(`${a.naechste_faelligkeit}T12:00:00`).getDate() : 99;
+      const tagB = b.naechste_faelligkeit ? new Date(`${b.naechste_faelligkeit}T12:00:00`).getDate() : 99;
+      return tagA - tagB;
+    });
+
+  // Einfache regelbasierte Auffälligkeiten, ergänzend zum manuell
+  // gepflegten Finanzfeed: doppelt wirkende Ausgaben (gleicher Name,
+  // gleicher Betrag, im selben Monat).
+  const moeglicheDuplikate: { text: string; subtext: string }[] = [];
+  const ausgabenNachSchluessel = new Map<string, typeof einmaligeAusgaben>();
+  for (const a of einmaligeAusgaben) {
+    const schluessel = `${a.name.trim().toLowerCase()}__${a.betrag}`;
+    const liste = ausgabenNachSchluessel.get(schluessel) ?? [];
+    liste.push(a);
+    ausgabenNachSchluessel.set(schluessel, liste);
+  }
+  for (const liste of ausgabenNachSchluessel.values()) {
+    if (liste.length > 1) {
+      moeglicheDuplikate.push({
+        text: `„${liste[0].name}" wurde ${liste.length}× mit ${fmt2(liste[0].betrag)} erfasst`,
+        subtext: "Könnte eine doppelte Buchung sein – kurz prüfen?",
+      });
+    }
+  }
+
+  const sichtbareZiele = ziele.slice(0, 3);
+  const monatsname = heute.toLocaleDateString("de-DE", { month: "long", year: "numeric" });
+
+  return (
+    <div>
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-8">
+        <div>
+          <p className="text-[13px] text-muted mb-1">
