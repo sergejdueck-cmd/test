@@ -1,0 +1,114 @@
+import { getFixkosten } from "@/lib/queries/fixkosten";
+import { getEinnahmen } from "@/lib/queries/einnahmen";
+import { getKonten, getVermoegensVerlauf } from "@/lib/queries/vermoegen";
+import { getFinanzfeed } from "@/lib/queries/finanzfeed";
+import { getKredite } from "@/lib/queries/kredite";
+import { getVersicherungen } from "@/lib/queries/versicherungen";
+import { getZiele } from "@/lib/queries/ziele";
+import { getEinmaligeAusgabenImMonat } from "@/lib/queries/einmalige-ausgaben";
+import { monatswert } from "@/types/finanzcockpit";
+import { CashflowChart } from "./CashflowChart";
+import { NeueAusgabeDialog } from "./einmalige-ausgaben/NeueAusgabeDialog";
+import {
+  TrendingUp, PiggyBank, Wallet, Landmark, Bell, ChevronRight,
+  CalendarClock, Sparkles, Baby, Target, ReceiptText, AlertTriangle,
+} from "lucide-react";
+
+const fmt = (n: number) => n.toLocaleString("de-DE", { maximumFractionDigits: 0 }) + " €";
+const fmt2 = (n: number) => n.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
+
+const feedIcon = { neutral: Landmark, warn: CalendarClock, good: Sparkles } as const;
+const feedTone = {
+  neutral: "bg-[#F3F1EA] text-muted",
+  warn: "bg-warnSoft text-warn",
+  good: "bg-accentSoft text-accent",
+} as const;
+
+const assetFarben: Record<string, string> = {
+  girokonto: "#2F6F5E",
+  sparkonto: "#8FB8A8",
+  depot: "#D8C48C",
+  tagesgeld: "#C97B63",
+};
+
+function StatCard({ label, value, icon: Icon }: { label: string; value: string; icon: typeof TrendingUp }) {
+  return (
+    <div className="min-w-0 rounded-card bg-card border border-border p-6 hover:shadow-[0_8px_24px_rgba(20,24,20,0.08)] transition-shadow duration-300">
+      <div className="flex items-start justify-between gap-3">
+        <span className="text-[13px] tracking-wide text-muted font-medium leading-5">{label}</span>
+        <div className="w-8 h-8 rounded-full bg-[#F3F1EA] flex items-center justify-center text-accent shrink-0">
+          <Icon size={15} strokeWidth={2} />
+        </div>
+      </div>
+      <div className="mt-4 font-mono text-[26px] tracking-tight tabular-nums whitespace-nowrap">{value}</div>
+    </div>
+  );
+}
+
+function BudgetZeile({ label, value, negativ = false, strong = false }: { label: string; value: number; negativ?: boolean; strong?: boolean }) {
+  return (
+    <div className={`flex items-center justify-between gap-4 py-2.5 ${strong ? "border-t border-border mt-1 pt-4" : "border-b border-[#F1EEE5] last:border-0"}`}>
+      <span className={`${strong ? "text-[14px] font-medium" : "text-[13px] text-muted"}`}>{label}</span>
+      <span className={`${strong ? "text-[19px]" : "text-[14px]"} font-mono tabular-nums whitespace-nowrap ${negativ ? "text-warn" : ""}`}>
+        {negativ ? "− " : ""}{fmt2(Math.abs(value))}
+      </span>
+    </div>
+  );
+}
+
+export default async function DashboardSeite() {
+  const heute = new Date();
+  const jahr = heute.getFullYear();
+  const monat = heute.getMonth() + 1;
+
+  const [fixkosten, einnahmen, konten, verlauf, feed, kredite, versicherungen, ziele, einmaligeAusgaben] = await Promise.all([
+    getFixkosten(),
+    getEinnahmen(),
+    getKonten(),
+    getVermoegensVerlauf(),
+    getFinanzfeed(),
+    getKredite(),
+    getVersicherungen(),
+    getZiele(),
+    getEinmaligeAusgabenImMonat(jahr, monat),
+  ]);
+
+  // Interne Umbuchungen (z. B. Sergej → Steffi) sind in einer persönlichen
+  // Kontosicht sinnvoll, dürfen aber das Haushaltseinkommen nicht aufblasen.
+  const monatlicheEinnahmen = einnahmen
+    .filter((e) => e.art === "regelmaessig" && e.betrag != null && !e.notiz?.toUpperCase().startsWith("INTERNE"))
+    .reduce((s, e) => s + (e.betrag ?? 0), 0);
+
+  const sparPositionen = fixkosten.filter((f) => f.kategorie.toLowerCase().includes("sparen") || f.name.toLowerCase().includes("rücklage"));
+  const normaleFixkosten = fixkosten.filter((f) => !sparPositionen.some((s) => s.id === f.id));
+  const monatlichesSparen = sparPositionen.reduce((s, f) => s + monatswert(f.betrag, f.rhythmus), 0);
+  const monatlicheFixkosten = normaleFixkosten.reduce((s, f) => s + monatswert(f.betrag, f.rhythmus), 0);
+  const monatlicheKreditraten = kredite
+    .filter((k) => k.status === "aktiv" && k.rate != null)
+    .reduce((s, k) => s + (k.rate ?? 0), 0);
+  const monatlicheVersicherungen = versicherungen
+    .filter((v) => v.status !== "gekuendigt")
+    .reduce((s, v) => s + monatswert(v.beitrag, v.rhythmus), 0);
+  const laufendeKostenOhneSparen = monatlicheFixkosten + monatlicheKreditraten + monatlicheVersicherungen;
+  const einmaligImMonat = einmaligeAusgaben.reduce((s, a) => s + a.betrag, 0);
+
+  // Girokonten sind die, mit denen laufend gewirtschaftet wird. Ein Minus
+  // ist aber kein Problem, wenn noch sichere Einnahmen diesen Monat
+  // anstehen, die es decken (z. B. Gehalt am Monatsersten) – dann wird
+  // es automatisch ausgeglichen, statt das frei verfügbare Geld
+  // künstlich schlechter aussehen zu lassen.
+  const heutigerTag = heute.getDate();
+  const girokontoMinusGesamt = konten
+    .filter((k) => k.typ === "girokonto" && !k.ist_kinderkonto && k.aktueller_stand < 0)
+    .reduce((s, k) => s + Math.abs(k.aktueller_stand), 0);
+  const nochAusstehendeEinnahmenDiesenMonat = einnahmen
+    .filter((e) => {
+      if (e.art !== "regelmaessig" || e.betrag == null || e.notiz?.toUpperCase().startsWith("INTERNE")) return false;
+      if (!e.naechste_faelligkeit) return false;
+      const tag = new Date(`${e.naechste_faelligkeit}T12:00:00`).getDate();
+      return tag >= heutigerTag;
+    })
+    .reduce((s, e) => s + (e.betrag ?? 0), 0);
+  const girokontoMinusGedecktDurchEinnahmen = girokontoMinusGesamt > 0 && nochAusstehendeEinnahmenDiesenMonat >= girokontoMinusGesamt;
+  const girokontoMinus = girokontoMinusGedecktDurchEinnahmen ? 0 : Math.max(0, girokontoMinusGesamt - nochAusstehendeEinnahmenDiesenMonat);
+
